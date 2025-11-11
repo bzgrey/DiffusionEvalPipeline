@@ -1,11 +1,10 @@
 import torch
 import matplotlib.pyplot as plt
 
-def area_change_stats(initial_areas: torch.Tensor, target_areas: torch.Tensor) -> torch.Tensor:
+def binary_classifier_area_growth(initial_areas: torch.Tensor, target_areas: torch.Tensor, threshold, show_hist=False) -> torch.Tensor:
     """
-    # Create binary classifier on if tumor growed based on area comparison. Take difference
-    # in areas between initial and target images. Any delta area greater than a standard deviation
-    # less than the mean delta area will be classified as tumor growth. All input images did have tumor growth
+    Create binary classifier on if tumor growed based on area comparison. Take difference
+    in areas between initial and target images. Any delta area greater than a given threshold will be classified as tumor growth. All input images did have tumor growth
 
     Provide some data on the distribution of area differences like standard deviation and mean. visualize with histogram.
      
@@ -30,26 +29,21 @@ def area_change_stats(initial_areas: torch.Tensor, target_areas: torch.Tensor) -
     plt.xlabel('Area Difference')
     plt.ylabel('Frequency')
     plt.legend()
-    plt.show()  
+    if show_hist:
+        plt.show()  
 
-    return mean_diff, std_diff
+    # # Create binary classifier based on threshold (mean - 1 std dev) possible alternative
+    # threshold = mean_diff - std_diff
+    binary_classification = (area_differences > threshold).float()
 
-# Quick test with made-up data
-if __name__ == "__main__":
-    # Create made-up data
-    initial_areas = torch.tensor([100.0, 150.0, 200.0, 120.0, 180.0, 90.0, 110.0, 160.0, 140.0, 130.0])
-    target_areas = torch.tensor([150.0, 180.0, 250.0, 140.0, 220.0, 95.0, 130.0, 190.0, 160.0, 145.0])
-    
-    print("Initial areas:", initial_areas)
-    print("Target areas:", target_areas)
-    print("Area differences:", target_areas - initial_areas)
+    # Print classification results
+    num_growth = binary_classification.sum().item()
+    num_no_growth = (binary_classification == 0).sum().item()
+    print(f"\nClassification Results (threshold: {threshold}):")
+    print(f"Classified as growth: {num_growth}/{len(binary_classification)}")
+    print(f"Classified as no growth: {num_no_growth}/{len(binary_classification)}")
 
-    mean_diff, std_diff = area_change_stats(initial_areas, target_areas)
-
-    print(f"\nMean difference: {mean_diff.item():.2f}")
-    print(f"Standard deviation: {std_diff.item():.2f}")
-    # print(f"Threshold (mean - std): {(mean_diff - std_diff).item():.2f}")
-
+    return binary_classification
 
 def dice_score(pred: torch.Tensor, target: torch.Tensor, smooth: float = 1e-6) -> float:
     """
