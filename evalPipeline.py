@@ -45,6 +45,7 @@ def binary_classifier_area_growth(initial_areas: torch.Tensor, target_areas: tor
 
     return binary_classification
 
+
 def dice_score(pred: torch.Tensor, target: torch.Tensor, smooth: float = 1e-6) -> float:
     """
     Compute the Dice Score between predicted and target tensors (each are masks of 1's and 0's).
