@@ -2,3 +2,13 @@ torch
 pytest
 matplotlib
 numpy
+pydicom
+nibabel
+tqdm
+connected-components-3d
+monai
+lungmask
+# The project imports `dynamic_network_architectures`; PyPI package name may be
+# `dynamic-network-architectures` or `dynamic_network_architectures`. If pip
+# install fails, try the alternate name.
+dynamic_network_architectures

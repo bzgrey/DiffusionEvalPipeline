@@ -788,7 +788,7 @@ class nnUNetConfidence(nn.Module):
             self.args.batch_size == 1
         ):
             detection_score = detection_score.unsqueeze(0)
-        outputs = {"logit": detection_score.as_tensor()}
+        outputs = {"logit": detection_score} # Benny removed .as_tensor() from this line
 
         return outputs
 
