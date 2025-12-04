@@ -1,7 +1,7 @@
 import torch
 import matplotlib.pyplot as plt
 
-def binary_classifier_area_growth(initial_areas: torch.Tensor, target_areas: torch.Tensor, threshold, show_hist=False) -> torch.Tensor:
+def binary_classifier_area_growth(initial_areas: torch.Tensor, target_areas: torch.Tensor, threshold, output_dir, show_hist=False) -> torch.Tensor:
     """
     Create binary classifier on if tumor growed based on area comparison. Take difference
     in areas between initial and target images. Any delta area greater than a given threshold will be classified as tumor growth. All input images did have tumor growth
@@ -30,7 +30,9 @@ def binary_classifier_area_growth(initial_areas: torch.Tensor, target_areas: tor
     plt.ylabel('Frequency')
     plt.legend()
     if show_hist:
-        plt.show()  
+        plt.savefig(f'{output_dir}/area_differences_histogram.png')
+        plt.show()
+        plt.close()
 
     # # Create binary classifier based on threshold (mean - 1 std dev) possible alternative
     # threshold = mean_diff - std_diff
