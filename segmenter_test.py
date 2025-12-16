@@ -161,10 +161,10 @@ lung_mask = model.apply(image_)
 print(f"Lung mask shape: {lung_mask.shape}")
 # Save a few slices from the 3D lung mask
 mid_slice = lung_mask.shape[0] // 2
-# for i, offset in enumerate([-2, -1, 0, 1, 2]):
-#     slice_idx = mid_slice + offset
-#     if 0 <= slice_idx < lung_mask.shape[0]:
-#         plt.imsave(f'lung_masks/lung_mask5_slice_{slice_idx}.png', lung_mask[slice_idx], cmap='gray')
+for i, offset in enumerate([-2, -1, 0, 1, 2]):
+    slice_idx = mid_slice + offset
+    if 0 <= slice_idx < lung_mask.shape[0]:
+        plt.imsave(f'lung_masks/lung_mask5_slice_{slice_idx}.png', lung_mask[slice_idx], cmap='gray')
 # plt.imsave('lung_masks/lung_mask5.png', lung_mask.squeeze(0), cmap='gray')
 print(f"Lung mask unique values: {np.unique(lung_mask)}")
 # preprocess image
@@ -205,10 +205,10 @@ binary_segmentation = (
     1 * (F.softmax(segmentation_outputs, 1)[0, 1] > 0.5) * lung_mask
 )
 print(f"Binary segmentation shape: {binary_segmentation.shape}")
-# for i, offset in enumerate([-2, -1, 0, 1, 2]):
-#     slice_idx = mid_slice + offset
-#     if 0 <= slice_idx < binary_segmentation.shape[0]:
-#         plt.imsave(f'binary_segmentation/bin_seg5_slice_{slice_idx}.png', binary_segmentation[slice_idx], cmap='gray')
+for i, offset in enumerate([-2, -1, 0, 1, 2]):
+    slice_idx = mid_slice + offset
+    if 0 <= slice_idx < binary_segmentation.shape[0]:
+        plt.imsave(f'binary_segmentation/bin_seg5_slice_{slice_idx}.png', binary_segmentation[slice_idx], cmap='gray')
 # plt.imsave('binary_segmentation.png', binary_segmentation.squeeze(0).cpu().numpy(), cmap='gray')
 # plt.imshow(binary_segmentation.squeeze(0).cpu().numpy(), cmap='gray')
 # plt.title('Binary Segmentation')
@@ -227,10 +227,6 @@ print(f"Sparse segmentation indices shape: {sparse_segmentation.indices().shape}
 print(f"Image shape: {image.shape}")
 image = image.squeeze(0).squeeze(0).permute(1, 2, 0)  # shape: H, W, D
 patches = []
-patch_sizes = []  # Track sizes to determine max dimensions
-
-# First pass: extract patches and track sizes
-temp_patches = []
 for inst_id in range(1, num_instances + 1):
     zs, ys, xs = sparse_segmentation.indices()[
         :, sparse_segmentation.values() == inst_id
@@ -265,35 +261,10 @@ for inst_id in range(1, num_instances + 1):
     )
     patchx = image[cbbox]
     patchl = patch[cbbox]
-    temp_patches.append((patchx, patchl))
-    patch_sizes.append(patchx.shape)
-
-# Determine maximum dimensions across all patches
-max_h = max(s[0] for s in patch_sizes)
-max_w = max(s[1] for s in patch_sizes)
-max_d = max(s[2] for s in patch_sizes)
-print(f"Max patch dimensions: H={max_h}, W={max_w}, D={max_d}")
-
-# Second pass: pad all patches to max dimensions
-for patchx, patchl in temp_patches:
-    # Pad to max dimensions
-    pad_h = max_h - patchx.shape[0]
-    pad_w = max_w - patchx.shape[1]
-    pad_d = max_d - patchx.shape[2]
-    
-    if pad_h > 0 or pad_w > 0 or pad_d > 0:
-        patchx = F.pad(patchx, (0, pad_d, 0, pad_w, 0, pad_h), mode='constant', value=0)
-        patchl = F.pad(patchl, (0, pad_d, 0, pad_w, 0, pad_h), mode='constant', value=0)
-    
     patch = torch.stack([patchx, patchl])
     patches.append(patch)
 
 patches = torch.stack(patches)
 print(f"Total patches shape: {patches.shape}")
 with torch.no_grad():
-    confidence_outputs = confidence_model(patches.float())
-
-print(f"Confidence outputs shape: {confidence_outputs.shape}")
-# print the first 10 confidence scores
-for i in range(min(10, confidence_outputs.shape[0])):
-    print(f"Instance {i+1} confidence score: {confidence_outputs[i].item()}")
+    confidence_outputs = confidence_model(patches)

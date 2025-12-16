@@ -10,7 +10,6 @@ import cc3d
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
-from torchvision import transforms
 import pydicom
 import os
 from pathlib import Path
@@ -73,6 +72,8 @@ def segmenter(dicom_dir, output_dir, pixel_spacing):
         force_cpu=False,
     )
 
+    print('Models loaded successfully.')
+
     # Set to eval mode
     segmentation_model.eval()
     confidence_model.eval()
@@ -89,6 +90,9 @@ def segmenter(dicom_dir, output_dir, pixel_spacing):
     # Run lung mask - transpose to put depth first
     image_ = np.transpose(image, (2, 0, 1))
     lung_mask = lungmask_model.apply(image_)
+    # turn all values greater than 0 to 1
+    lung_mask = (lung_mask > 0).astype(np.uint8)
+    print(f"lung mask shape: {lung_mask.shape}")
 
     # Apply windowing
     image = apply_windowing(image.astype(np.float64), -600, 1600)
@@ -102,7 +106,7 @@ def segmenter(dicom_dir, output_dir, pixel_spacing):
     # Interpolate to target size
     image = F.interpolate(
         image,
-        size=(image.shape[2], 1024, 1024),
+        size=(image.shape[2], 512, 512),
         mode="trilinear",
         align_corners=False,
     )
@@ -113,20 +117,16 @@ def segmenter(dicom_dir, output_dir, pixel_spacing):
     lung_mask = torch.tensor(lung_mask).unsqueeze(1)
     lung_mask = F.interpolate(
         lung_mask,
-        size=(1024, 1024),
+        size=(512, 512),
         mode="nearest-exact",
     )
     lung_mask = lung_mask.squeeze()
 
-    # Interpolate lung mask
-    lung_mask = torch.tensor(lung_mask).unsqueeze(1)
-    lung_mask = F.interpolate(
-        lung_mask,
-        size=(1024, 1024),
-        mode="nearest-exact",
-    ) 
-    lung_mask = lung_mask.squeeze()
-
+    # to cuda if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    image = image.to(device)
+    lung_mask = lung_mask.to(device)
+    segmentation_model = segmentation_model.to(device)
     # Run segmentation
     with torch.no_grad():
         segmentation_outputs = segmentation_model.predict(image.float())
@@ -134,8 +134,9 @@ def segmenter(dicom_dir, output_dir, pixel_spacing):
     # Create binary segmentation
     binary_segmentation = (
         1 * (F.softmax(segmentation_outputs, 1)[0, 1] > 0.5) * lung_mask
-    )
-
+    ).to("cpu")
+    image = image.to("cpu")
+    lung_mask = lung_mask.to("cpu")
     # Get connected components
     instance_segmentation, num_instances = cc3d.connected_components(
         binary_segmentation.cpu().numpy(),
@@ -145,9 +146,6 @@ def segmenter(dicom_dir, output_dir, pixel_spacing):
 
     # Convert to sparse tensor
     sparse_segmentation = torch.tensor(instance_segmentation, dtype=torch.int32).to_sparse()
-
-    # Reshape image for patch extraction
-    image = image.squeeze(0).squeeze(0).permute(1, 2, 0)  # shape: H, W, D
 
     # Reshape image for patch extraction
     image = image.squeeze(0).squeeze(0).permute(1, 2, 0)  # shape: H, W, D
@@ -239,7 +237,7 @@ def segmenter(dicom_dir, output_dir, pixel_spacing):
         
     print(f"Saved visualizations to {output_path}")
     pixel_volume = pixel_spacing[0] * pixel_spacing[1] * pixel_spacing[2]
-    patch_volumes = {inst_id: count * pixel_volume for inst_id, count in pixelCounts.items()}
+    patch_volumes = {inst_id: count * pixel_volume for inst_id, count in patchPixelCounts.items()}
 
     # Determine maximum dimensions across all patches
     max_h = max(s[0] for s in patch_sizes)
@@ -264,12 +262,32 @@ def segmenter(dicom_dir, output_dir, pixel_spacing):
     patches = torch.stack(patches)
 
     # Run confidence model
+    confidence_model = confidence_model.to(device)
     with torch.no_grad():
-        confidence_outputs = confidence_model(patches.float())
+        confidence_outputs = confidence_model(patches.float().to(device))
 
     logits = confidence_outputs['logit']
     # run softmax on logits to get confidence scores
     confidence_scores = F.softmax(logits, dim=1)
     print(f"confidence scores: {confidence_scores}")
 
-    return patch_volumes
+    return patch_volumes, confidence_scores
+
+if __name__ == "__main__":
+    # dicom_dir = "/data/rbg/shared/datasets/NLST/NLST/all_nlst-ct/set2/batch2/208089/T2/1.3.6.1.4.1.14519.5.2.1.7009.9004.249204139349143430936217412730/"
+    # output_dir = "./segmentation_outputs"
+    # pixel_spacing = [0.703125, 0.703125, 2.0]  # Example pixel spacing in mm
+
+
+    # patch_volumes, confidence_scores = segmenter(dicom_dir, output_dir, pixel_spacing)
+    # total_volume = 0
+    # for patch_id, volume in patch_volumes.items():
+    #     if confidence_scores[patch_id-1, 0] > 0.5:  # Assuming class 1 is the positive class
+    #         total_volume += volume
+    #     print(f"Patch ID: {patch_id}, Volume (mm^3): {volume}, Confidence Scores: {confidence_scores[patch_id-1].cpu().numpy()}")
+    
+    # print(f"Total Volume of Nodules (mm^3): {total_volume}")
+    # load pytorch tensor
+    tensor = torch.load("/data/rbg/scratch/lung_ct/nlst_abnormalities51_nnunet_sparse_segmentation/sample_10000402215824639.pt")
+    print(tensor["sparse_segmentation"].coalesce().indices().shape)
+    print(tensor["sparse_segmentation"].coalesce().values().shape)

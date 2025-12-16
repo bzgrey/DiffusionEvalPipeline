@@ -5,3 +5,4 @@ __pycache__/
 .ipynb_checkpoints/
 saved_images/
 patch_visualizations/
+patch_visualizations_old/
