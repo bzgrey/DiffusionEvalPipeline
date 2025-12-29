@@ -1,15 +1,16 @@
 # Import required libraries
 from segmentation_pipeline import nnUNet, nnUNetConfidence
 from lungmask import LMInferer
-from segmentation_pipeline import apply_windowing
+from segmentation_pipeline import apply_windowing, min_max_normalize_batch
 import torch
 import torch.nn.functional as F
+import cc3d
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Optional
 
 def patch_segmenter(patch_tensor: torch.Tensor, segmentation_model: nnUNet, 
-                    # lungmask_model: LMInferer, 
+                    lungmask_patch_tensor: torch.Tensor, 
                     confidence_model: Optional[nnUNetConfidence]) -> torch.Tensor:
     """
     Segments a 3D medical image using a patch-based approach.
@@ -17,7 +18,7 @@ def patch_segmenter(patch_tensor: torch.Tensor, segmentation_model: nnUNet,
     Parameters:
     - patch_tensor (torch.Tensor): The input 3D patch tensor of shape (B, D, H, W) = (B, Z, Y, X) = (B, 32, 128, 128), TOD0 = work with batches later
     - segmentation_model (nnUNet): The pre-trained segmentation model.
-    - lungmask_model (LMInferer): The pre-trained lung mask model.
+    - lungmask_patch_tensor (torch.Tensor): The input 3D patch tensor for lung mask of shape (B, D, H, W).
     - confidence_model (nnUNetConfidence, optional): The pre-trained confidence model.
 
     Returns:
@@ -32,34 +33,13 @@ def patch_segmenter(patch_tensor: torch.Tensor, segmentation_model: nnUNet,
     # Set device
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Convert patch tensor to be ready for model input
-    # lungmask_input = patch_tensor.numpy()
-
-    # # Run lung mask model
-    # # The lungmask model doesn't take batches, so process each patch individually
-    # lung_masks = []
-    # for i in range(lungmask_input.shape[0]):
-    #     single_patch = lungmask_input[i]
-    #     single_lung_mask = lungmask_model.apply(single_patch)
-    #     lung_masks.append(single_lung_mask)
-    # lung_mask = np.stack(lung_masks, axis=0)  # Shape: (B, D, H, W)
-    # lung_mask = (lung_mask > 0).astype(np.uint8) # Binarize lung mask from 1s and 2s (for two lungs) to 1s
-
-
     # Prepare input tensor for segmentation model
     window_center, window_width = -600, 1600
     patches = apply_windowing(patch_tensor.numpy().astype(np.float64), window_center, window_width)
     # Convert to tensor and normalize
+    patches = torch.tensor(patches)
     patches = torch.tensor(patches) // 256
     patches = patches.unsqueeze(1)  # shape: [B, 1, D, H, W], add channel dimension
-
-    # Interpolate to target size if needed
-    # image = F.interpolate(
-    #     image,
-    #     size=(image.shape[2], 1024, 1024),
-    #     mode="trilinear",
-    #     align_corners=False,
-    # )
 
     # Move to device
     patches = patches.to(device=device).float()
@@ -67,15 +47,44 @@ def patch_segmenter(patch_tensor: torch.Tensor, segmentation_model: nnUNet,
 
     # Run segmentation model
     with torch.no_grad():
-        segmentation_outputs = segmentation_model.predict(patches).cpu()
-    print(f"segmentation outputs shape: {segmentation_outputs.shape}")
-    print(f"segmentation outputs example: {segmentation_outputs[0, :, 16, 64, 64]}")
-    # Create binary segmentation
-    binary_segmentation = (
-        1 * (F.softmax(segmentation_outputs, dim=1)[:, 1] > 0.5) 
-        # * torch.tensor(lung_mask)
-    )
-    print(f"binary segmentation example:")
+        normalized_patches = min_max_normalize_batch(patches)
+        
+        binary_segmentation_outputs = segmentation_model(normalized_patches.float())["pred_masks_pos"].cpu() * lungmask_patch_tensor
+    binary_segmentation = binary_segmentation_outputs
+    
+    # Get connected components for each patch
+    instance_segmentations = []
+    for i, patch in enumerate(binary_segmentation):
+        patch, num_instances = cc3d.connected_components(
+            patch.cpu().numpy(),
+            return_N=True,
+        )
+        instance_segmentations.append(patch)
+    instance_segmentation = torch.tensor(np.stack(instance_segmentations, axis=0))  # shape: [B, D, H, W]
+    # Include for each patch only the component that contains the most pixels in the center 20 by 20 region of the middle slice
+    B, D, H, W = binary_segmentation.shape
+    center_z, center_y, center_x = D // 2, H // 2, W // 2
+    for b in range(B):
+
+        center_region = instance_segmentation[
+            b,
+            center_z,
+            center_y - 5 : center_y + 5,
+            center_x - 5 : center_x + 5,
+        ]
+        center_labels, counts = torch.unique(center_region, return_counts=True)
+        zero_index = center_labels.tolist().index(0) if 0 in center_labels else -1
+        if zero_index != -1:
+            center_labels = torch.cat((center_labels[:zero_index], center_labels[zero_index+1:]))
+            counts = torch.cat((counts[:zero_index], counts[zero_index+1:]))
+        
+
+        if len(center_labels) > 0:
+            most_frequent_label = center_labels[torch.argmax(counts)]
+   
+            binary_segmentation[b] = torch.tensor(
+                1 * (instance_segmentation[b] == most_frequent_label)
+            )
 
     # Run confidence model if needed
     if confidence_model is not None:
@@ -178,31 +187,32 @@ if __name__ == "__main__":
 
     print("Confidence model loaded successfully.")
 
-    # # Load lungmask model
-    # lungmask_model = LMInferer(
-    #     modelpath="/data/rbg/users/pgmikhael/current/lungmask/checkpoints/unet_r231-d5d2fc3d.pth",
-    #     tqdm_disable=True,
-    #     batch_size=100,
-    #     force_cpu=False,
-    # )
     print("Models loaded successfully.")
 
     # load example patch tensor batch
     patch_tensor = torch.load("nodule_patches_sample_10000402215824639.pt").cpu()  # shape: [N, D, H, W], insert correct path here for tensor of batch of patches of original images
+    lungmask_patch_tensor = torch.load("lungmask_patches_sample_10000402215824639.pt").cpu()  # shape: [N, D, H, W], insert correct path here for tensor of batch of lungmasks of original images
     print(f"Patch tensor shape: {patch_tensor.shape}")
+    
+    # Load normalization stats from full scan
+    # normalization_stats = torch.load("normalization_stats_sample_10000402215824639.pt")
+    # print(f"Loaded normalization stats: min={normalization_stats['min_vals'].squeeze().item()}, max={normalization_stats['max_vals'].squeeze().item()}")
+    
     # Run patch segmenter
     binary_segmentation = patch_segmenter(
         patch_tensor,
         segmentation_model,
-        # lungmask_model, 
+        lungmask_patch_tensor, 
         confidence_model,
+        # normalization_stats=normalization_stats,  # Pass the normalization stats
     )  # shape: [B, D, H, W]
     # visualize segmentation
     visualize_segmentation(patch_tensor, binary_segmentation, output_path="segmentation_outputs")
     print(f"Binary segmentation shape: {binary_segmentation.shape}")
     # Calculate volumes
-    pixel_spacing = [0.8007810115814209, 0.8007810115814209, 2.5]  # example pixel spacing (z, y, x) in mm
+    pixel_spacing = [0.8007810115814209/2, 0.8007810115814209/2, 2.5]  # example pixel spacing (z, y, x) in mm
     pixel_volume = pixel_spacing[0] * pixel_spacing[1] * pixel_spacing[2]  # in mm^3
     volumes = get_volumes(binary_segmentation, pixel_spacing)  # shape: [B,]
     print(f"Nodule volumes (mm^3): {volumes}")
+    print(f"total nodule volume (mm^3): {volumes.sum()}")
     
